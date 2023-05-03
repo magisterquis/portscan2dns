@@ -27,6 +27,6 @@ The following are settable at compile-time with `-ldflags -X`:
 
 Variable         | Default             | Description
 -----------------|---------------------|-
-`main.Domain`    | _none_              | Reporting DNS domain
+`main.domain`    | _none_              | Reporting DNS domain
 `main.portsList` | "20-23,80,443,5900" | List of ports and ranges to scan
 `main.timeout`   | "1s"                | TCP connect timeout
