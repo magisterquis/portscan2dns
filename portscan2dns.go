@@ -444,12 +444,7 @@ func attackOne(hp hostport, wg *sync.WaitGroup) {
 func reportLabel(hp hostport) (string, error) {
 	switch salt {
 	case "": /* Plaintext. */
-		return fmt.Sprintf(
-			"%sp%s%s",
-			toldh(hp.host),
-			hp.port,
-			domain,
-		), nil
+		return fmt.Sprintf("%sp%s", toldh(hp.host), hp.port), nil
 	case randSalt: /* Random hex. */
 		b := make([]byte, sha256.Size224)
 		if _, err := rand.Read(b); nil != err {
