@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/exp/slices"
@@ -40,8 +41,13 @@ type hostport struct {
 	port string
 }
 
-/* toldh sanitizes an IP address to DNS-friendly LDH */
-var toldh = strings.NewReplacer(":", "-", ".", "-").Replace
+var (
+	/* toldh sanitizes an IP address to DNS-friendly LDH */
+	toldh = strings.NewReplacer(":", "-", ".", "-").Replace
+
+	/* Number of open ports. */
+	nOpen atomic.Uint64
+)
 
 func main() {
 	start := time.Now()
@@ -181,8 +187,9 @@ Options:
 	close(tch)
 	wg.Wait()
 	log.Printf(
-		"Done.  Scanned %v host:port pairs in %v",
+		"Done.  Scanned %v host:port pairs and found %d open in %v",
 		count,
+		nOpen.Load(),
 		time.Since(start).Round(time.Millisecond),
 	)
 }
@@ -310,6 +317,7 @@ func attackOne(hp hostport, wg *sync.WaitGroup) {
 	}
 	/* If we've got it, log it and maybe send a DNS message */
 	c.Close()
+	nOpen.Add(1)
 	log.Printf("[%v] SUCCESS", t)
 	if "" != domain {
 		var b strings.Builder
