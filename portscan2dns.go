@@ -11,6 +11,7 @@ package main
  */
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"flag"
@@ -34,6 +35,7 @@ var (
 	portsList = "20-23,80,443,5900" /* Ports list. */
 	timeout   = "1s"                /* Connect timeout. */
 	salt      string                /* Reporting hash salt. */
+	randSalt  = "randomhash"        /* Really random hashes. */
 
 	timeoutD time.Duration /* Parsed timeout. */
 )
@@ -134,11 +136,15 @@ reporting is example.com, a query would be made for
 IPv4 addresses will have dots replaced by hyphens.  IPv6 addresses will have
 colons replaced by hyphens.
 
+Alternatively, if a salt is given, a hash of the open ports will be sent
+instead.  The special salt %q causes random hex to be sent instead.
+
 If no domain is set open ports will just be logged to the standard output.
 
 Options:
 `,
 			os.Args[0],
+			randSalt,
 		)
 		flag.PrintDefaults()
 	}
@@ -376,7 +382,15 @@ func attack(tch <-chan hostport, wg *sync.WaitGroup) {
 		}
 
 		/* See if this host and port matches the hash. */
-		if targetHash == reportLabel(hp) {
+		cHash, err := reportLabel(hp)
+		if nil != err {
+			log.Fatalf(
+				"Error generating hash for %s: %s",
+				net.JoinHostPort(hp.host, hp.port),
+				err,
+			)
+		}
+		if targetHash == cHash {
 			fmt.Printf("%s\n", net.JoinHostPort(hp.host, hp.port))
 			os.Exit(0)
 		}
@@ -406,7 +420,18 @@ func attackOne(hp hostport, wg *sync.WaitGroup) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		d := reportLabel(hp) + domain
+		d, err := reportLabel(hp)
+		if nil != err {
+			if !quiet {
+				log.Printf(
+					"[%s] Error generating hash: %s",
+					t,
+					err,
+				)
+			}
+			return
+		}
+		d += domain
 		if _, err := net.LookupHost(d); nil != err && !quiet {
 			log.Printf("[%s] DNS error for %s: %s", t, d, err)
 		}
@@ -416,13 +441,26 @@ func attackOne(hp hostport, wg *sync.WaitGroup) {
 // reportDomain returns a dns label suitable for a query which reports that the
 // given hostport is open.  If salt is not the empty string, the label is
 // hex(sha224(salt+host:port)).
-func reportLabel(hp hostport) string {
-	/* If we're reporting plaintext, life's easy. */
-	if "" == salt {
-		return fmt.Sprintf("%sp%s%s", toldh(hp.host), hp.port, domain)
+func reportLabel(hp hostport) (string, error) {
+	switch salt {
+	case "": /* Plaintext. */
+		return fmt.Sprintf(
+			"%sp%s%s",
+			toldh(hp.host),
+			hp.port,
+			domain,
+		), nil
+	case randSalt: /* Random hex. */
+		b := make([]byte, sha256.Size224)
+		if _, err := rand.Read(b); nil != err {
+			return "", err
+		}
+		return hex.EncodeToString(b), nil
+	default: /* A real hash. */
+		/* Salted hash, for secrecy. */
+		dgst := sha256.Sum224([]byte(
+			salt + net.JoinHostPort(hp.host, hp.port)),
+		)
+		return hex.EncodeToString(dgst[:]), nil
 	}
-
-	/* Salted hash, for secrecy. */
-	dgst := sha256.Sum224([]byte(salt + net.JoinHostPort(hp.host, hp.port)))
-	return hex.EncodeToString(dgst[:])
 }

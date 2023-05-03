@@ -32,11 +32,17 @@ func TestReportLabel(t *testing.T) {
 		c := c /* :( */
 		t.Run("", func(t *testing.T) {
 			t.Parallel()
-			got := reportLabel(hostport{host: c.host, port: c.port})
-			if got == c.want {
+			got, err := reportLabel(hostport{
+				host: c.host,
+				port: c.port,
+			})
+			if nil != err {
+				t.Errorf("err: %q", err)
 				return
 			}
-			t.Errorf("got: %q", got)
+			if got != c.want {
+				t.Errorf("got: %q", got)
+			}
 		})
 	}
 }
