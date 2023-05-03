@@ -25,6 +25,15 @@ import (
 	"golang.org/x/exp/slices"
 )
 
+/* Compile-time defaults. */
+var (
+	domain    string                /* Reporting domain. */
+	portsList = "20-23,80,443,5900" /* Ports list. */
+	timeout   = "1s"                /* Connect timeout. */
+
+	timeoutD time.Duration /* Parsed timeout. */
+)
+
 /* hostport contains a host and port for a connection attempt */
 type hostport struct {
 	host string
@@ -35,28 +44,43 @@ type hostport struct {
 var toldh = strings.NewReplacer(":", "-", ".", "-").Replace
 
 func main() {
+	start := time.Now()
+	/* Parse timeout, if we have one. */
+	if "" != timeout {
+		var err error
+		if timeoutD, err = time.ParseDuration(timeout); nil != err {
+			log.Fatalf(
+				"Error parsing timeout %q: %s",
+				timeout,
+				err,
+			)
+		}
+	}
+
 	var (
-		start  = time.Now()
-		domain = flag.String(
-			"domain",
-			"",
-			"DNS `domain` to which to send found open ports",
-		)
 		nAtt = flag.Uint(
 			"parallel",
 			16,
 			"Try to connect to `N` ports in parallel",
 		)
-		portsList = flag.String(
-			"ports",
-			"20-23,80,443,5900",
-			"Comma-separated `list` of port ranges",
-		)
-		timeout = flag.Duration(
-			"timeout",
-			time.Second,
-			"Port connection `timeout`",
-		)
+	)
+	flag.StringVar(
+		&domain,
+		"domain",
+		domain,
+		"Optional DNS `domain` to which to send found open ports",
+	)
+	flag.StringVar(
+		&portsList,
+		"ports",
+		portsList,
+		"Comma-separated `list` of port ranges",
+	)
+	flag.DurationVar(
+		&timeoutD,
+		"timeout",
+		timeoutD,
+		"Port connection `timeout`",
 	)
 	flag.Usage = func() {
 		fmt.Fprintf(
@@ -87,12 +111,12 @@ Options:
 	flag.Parse()
 
 	/* Make sure the domain has one leading dot and no trailing dots. */
-	if "" != *domain {
-		*domain = "." + strings.Trim(*domain, ".")
+	if "" != domain {
+		domain = "." + strings.Trim(domain, ".")
 	}
 
 	/* Get ports to try */
-	ports, err := parsePorts(*portsList)
+	ports, err := parsePorts()
 	if nil != err {
 		log.Fatalf("Unable to parse ports list: %v", err)
 	}
@@ -127,7 +151,7 @@ Options:
 	)
 	for i := uint(0); i < *nAtt; i++ {
 		wg.Add(1)
-		go attack(*domain, *timeout, tch, &wg)
+		go attack(tch, &wg)
 	}
 
 	/* Send targets */
@@ -164,11 +188,11 @@ Options:
 }
 
 // parsePorts turns the ports list into a list of port numbers.
-func parsePorts(l string) ([]string, error) {
+func parsePorts() ([]string, error) {
 	var is []int
 
 	/* Get each port or range */
-	for _, chunk := range strings.Split(l, ",") {
+	for _, chunk := range strings.Split(portsList, ",") {
 		if "" == chunk {
 			continue
 		}
@@ -266,30 +290,20 @@ TIPLOOP:
 
 // attack reads targets from tch, tries to connect, and if successful sends
 // the host and port via DNS to the domain, if it's not the empty string.
-func attack(
-	domain string,
-	timeout time.Duration,
-	tch <-chan hostport,
-	wg *sync.WaitGroup,
-) {
+func attack(tch <-chan hostport, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for hp := range tch {
-		attackOne(domain, timeout, hp, wg)
+		attackOne(hp, wg)
 	}
 }
 
 // attackOne tries to connect to the given hostport until timeout elapses.  If
 // successful and the domain isn't the empty string, the host and port are sent
 // to the domain via DNS.
-func attackOne(
-	domain string,
-	timeout time.Duration,
-	hp hostport,
-	wg *sync.WaitGroup,
-) {
+func attackOne(hp hostport, wg *sync.WaitGroup) {
 	/* Attempt to connect to the target */
 	t := net.JoinHostPort(hp.host, hp.port)
-	c, err := net.DialTimeout("tcp", t, timeout)
+	c, err := net.DialTimeout("tcp", t, timeoutD)
 	if nil != err {
 		log.Printf("[%v] FAIL: %v", t, err)
 		return
