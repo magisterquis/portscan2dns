@@ -7,7 +7,7 @@ package main
  * Portscanner which reports open ports via DNS
  * By J. Stuart McMurray
  * Created 20190423
- * Last Modified 20190423
+ * Last Modified 20230503
  */
 
 import (
@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/exp/slices"
 )
 
 /* hostport contains a host and port for a connection attempt */
@@ -157,11 +159,11 @@ Options:
 	log.Printf(
 		"Done.  Scanned %v host:port pairs in %v",
 		count,
-		time.Now().Sub(start),
+		time.Since(start).Round(time.Millisecond),
 	)
 }
 
-/* parsePorts turns the ports list into a list of port numbers */
+// parsePorts turns the ports list into a list of port numbers.
 func parsePorts(l string) ([]string, error) {
 	var is []int
 
@@ -206,31 +208,20 @@ func parsePorts(l string) ([]string, error) {
 
 	/* Sort and dedup list */
 	sort.Ints(is)
-	var (
-		next int
-		last int
-	)
-	for _, i := range is {
-		if i == last {
-			continue
-		}
-		last = i
-		is[next] = i
-		next++
-	}
+	is = slices.Compact(is)
 
 	/* Stringify */
-	var ps []string
-	for _, i := range is {
-		ps = append(ps, strconv.Itoa(i))
+	ps := make([]string, len(is))
+	for i, ii := range is {
+		ps[i] = strconv.Itoa(ii)
 	}
 	return ps, nil
 }
 
-/* parseTargets parses the arguments to the program and returns a list of CIDR
-ranges and targets.  If a hostname is passed to the program, it will be
-resolved.  The targets are all checked against the CIDR ranges to prevent
-duplication.  CIDR ranges are not checked against each other, however. */
+// parseTargets parses the arguments to the program and returns a list of CIDR
+// ranges and targets.  If a hostname is passed to the program, it will be
+// resolved.  The targets are all checked against the CIDR ranges to prevent
+// duplication.  CIDR ranges are not checked against each other, however.
 func parseTargets(as []string) (targets []string, cidrs []*net.IPNet, err error) {
 	var tips []net.IP /* Target IPs */
 	for _, a := range as {
@@ -273,8 +264,8 @@ TIPLOOP:
 	return
 }
 
-/* attack reads targets from tch, tries to connect, and if successful sends
-the host and port via DNS to the domain, if it's not the empty string. */
+// attack reads targets from tch, tries to connect, and if successful sends
+// the host and port via DNS to the domain, if it's not the empty string.
 func attack(
 	domain string,
 	timeout time.Duration,
@@ -287,9 +278,9 @@ func attack(
 	}
 }
 
-/* attackOne tries to connect to the given hostport until timeout elapses.  If
-successful and the domain isn't the empty string, the host and port are sent
-to the domain via DNS. */
+// attackOne tries to connect to the given hostport until timeout elapses.  If
+// successful and the domain isn't the empty string, the host and port are sent
+// to the domain via DNS.
 func attackOne(
 	domain string,
 	timeout time.Duration,
