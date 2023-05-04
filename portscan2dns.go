@@ -11,6 +11,9 @@ package main
  */
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -31,6 +34,8 @@ var (
 	domain    string                /* Reporting domain. */
 	portsList = "20-23,80,443,5900" /* Ports list. */
 	timeout   = "1s"                /* Connect timeout. */
+	salt      string                /* Reporting hash salt. */
+	randSalt  = "randomhash"        /* Really random hashes. */
 
 	timeoutD time.Duration /* Parsed timeout. */
 )
@@ -47,6 +52,12 @@ var (
 
 	/* Number of open ports. */
 	nOpen atomic.Uint64
+
+	/* Don't report closed ports or DNS errors. */
+	quiet bool
+
+	/* targetHash is a target for which we're looking for the hash. */
+	targetHash string
 )
 
 func main() {
@@ -88,6 +99,25 @@ func main() {
 		timeoutD,
 		"Port connection `timeout`",
 	)
+	flag.BoolVar(
+		&quiet,
+		"quiet",
+		quiet,
+		"Don't report non-open ports or DNS errors",
+	)
+	flag.StringVar(
+		&salt,
+		"salt",
+		salt,
+		"If set, reports oper ports as sha224(salt+host:port)",
+	)
+	flag.StringVar(
+		&targetHash,
+		"target-from",
+		targetHash,
+		"Get the IP and port which corresponds to the "+
+			"SHA224 `hash`",
+	)
 	flag.Usage = func() {
 		fmt.Fprintf(
 			os.Stderr,
@@ -106,11 +136,15 @@ reporting is example.com, a query would be made for
 IPv4 addresses will have dots replaced by hyphens.  IPv6 addresses will have
 colons replaced by hyphens.
 
+Alternatively, if a salt is given, a hash of the open ports will be sent
+instead.  The special salt %q causes random hex to be sent instead.
+
 If no domain is set open ports will just be logged to the standard output.
 
 Options:
 `,
 			os.Args[0],
+			randSalt,
 		)
 		flag.PrintDefaults()
 	}
@@ -119,6 +153,40 @@ Options:
 	/* Make sure the domain has one leading dot and no trailing dots. */
 	if "" != domain {
 		domain = "." + strings.Trim(domain, ".")
+	}
+
+	/* If we're working out which address corresponds to the hash, we'll
+	need a salt.  We'll also need to make sure the target hash really is
+	a "normal" SHA224 hash. */
+	if "" != targetHash {
+		/* Need a salt. */
+		if "" == salt {
+			log.Fatalf(
+				"Need the original salt to find the target "+
+					"for %s",
+				targetHash,
+			)
+		}
+		/* Make sure we have a SHA224 hash. */
+		targetHash, _, _ = strings.Cut(
+			strings.ToLower(targetHash),
+			".",
+		)
+		dec, err := hex.DecodeString(targetHash)
+		if nil != err {
+			log.Fatalf(
+				"Error validating hexiness of %q: %s",
+				targetHash,
+				err,
+			)
+		}
+		if len(dec) != sha256.Size224 {
+			log.Fatalf(
+				"Hash should be %d bytes, not %d",
+				sha256.Size224,
+				len(dec),
+			)
+		}
 	}
 
 	/* Get ports to try */
@@ -186,6 +254,13 @@ Options:
 	/* Wait for attackers to finish */
 	close(tch)
 	wg.Wait()
+
+	/* If we were looking for a hash and got this far, we didn't find
+	it. */
+	if "" != targetHash {
+		log.Fatalf("Not found")
+	}
+
 	log.Printf(
 		"Done.  Scanned %v host:port pairs and found %d open in %v",
 		count,
@@ -300,7 +375,25 @@ TIPLOOP:
 func attack(tch <-chan hostport, wg *sync.WaitGroup) {
 	defer wg.Done()
 	for hp := range tch {
-		attackOne(hp, wg)
+		/* If we're not looking for a hash, send for attacking. */
+		if "" == targetHash {
+			attackOne(hp, wg)
+			continue
+		}
+
+		/* See if this host and port matches the hash. */
+		cHash, err := reportLabel(hp)
+		if nil != err {
+			log.Fatalf(
+				"Error generating hash for %s: %s",
+				net.JoinHostPort(hp.host, hp.port),
+				err,
+			)
+		}
+		if targetHash == cHash {
+			fmt.Printf("%s\n", net.JoinHostPort(hp.host, hp.port))
+			os.Exit(0)
+		}
 	}
 }
 
@@ -312,23 +405,57 @@ func attackOne(hp hostport, wg *sync.WaitGroup) {
 	t := net.JoinHostPort(hp.host, hp.port)
 	c, err := net.DialTimeout("tcp", t, timeoutD)
 	if nil != err {
-		log.Printf("[%v] FAIL: %v", t, err)
+		if !quiet {
+			log.Printf("[%v] FAIL: %v", t, err)
+		}
 		return
 	}
 	/* If we've got it, log it and maybe send a DNS message */
 	c.Close()
 	nOpen.Add(1)
 	log.Printf("[%v] SUCCESS", t)
-	if "" != domain {
-		var b strings.Builder
-		b.WriteString(toldh(hp.host))
-		b.WriteRune('p')
-		b.WriteString(hp.port)
-		b.WriteString(domain)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			net.LookupHost(b.String())
-		}()
+	if "" == domain {
+		return
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		d, err := reportLabel(hp)
+		if nil != err {
+			if !quiet {
+				log.Printf(
+					"[%s] Error generating hash: %s",
+					t,
+					err,
+				)
+			}
+			return
+		}
+		d += domain
+		if _, err := net.LookupHost(d); nil != err && !quiet {
+			log.Printf("[%s] DNS error for %s: %s", t, d, err)
+		}
+	}()
+}
+
+// reportDomain returns a dns label suitable for a query which reports that the
+// given hostport is open.  If salt is not the empty string, the label is
+// hex(sha224(salt+host:port)).
+func reportLabel(hp hostport) (string, error) {
+	switch salt {
+	case "": /* Plaintext. */
+		return fmt.Sprintf("%sp%s", toldh(hp.host), hp.port), nil
+	case randSalt: /* Random hex. */
+		b := make([]byte, sha256.Size224)
+		if _, err := rand.Read(b); nil != err {
+			return "", err
+		}
+		return hex.EncodeToString(b), nil
+	default: /* A real hash. */
+		/* Salted hash, for secrecy. */
+		dgst := sha256.Sum224([]byte(
+			salt + net.JoinHostPort(hp.host, hp.port)),
+		)
+		return hex.EncodeToString(dgst[:]), nil
 	}
 }
